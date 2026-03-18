@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from openai import OpenAI
+from groq import Groq
 import json, os
 from typing import Optional
 from datetime import datetime
@@ -11,9 +11,8 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION — set via Railway environment variables
 # ─────────────────────────────────────────────────────────────────────────────
-MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
-MINIMAX_BASE_URL = "https://api.minimax.io/v1"
-MODEL_NAME = os.getenv("MODEL_NAME", "MiniMax-Text-01")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
 
 SYSTEM_PROMPT = """
 You are a senior data analyst with 10+ years of experience,
@@ -32,12 +31,13 @@ Your role is to assist as a personal BI advisor:
 
 Always be direct, practical, and professional. Give concrete
 examples, code snippets, and step-by-step guidance when relevant.
+When you answer from general knowledge, mention it briefly.
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
 # APP INIT
 # ─────────────────────────────────────────────────────────────────────────────
-app = FastAPI(title="MiniMax FastAPI Bot", version="1.0.0")
+app = FastAPI(title="BI Analyst Bot — Groq", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,16 +48,7 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# In-memory conversation store
 conversation_store: dict = {}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MINIMAX CLIENT
-# ─────────────────────────────────────────────────────────────────────────────
-def get_client():
-    if not MINIMAX_API_KEY:
-        raise HTTPException(status_code=500, detail="MINIMAX_API_KEY not set. Add it in Railway environment variables.")
-    return OpenAI(api_key=MINIMAX_API_KEY, base_url=MINIMAX_BASE_URL)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SCHEMAS
@@ -79,13 +70,20 @@ class ClearRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+def get_client():
+    if not GROQ_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="GROQ_API_KEY not set. Add it in Railway → Variables."
+        )
+    return Groq(api_key=GROQ_API_KEY)
+
 def get_history(session_id: str) -> list:
     if session_id not in conversation_store:
         conversation_store[session_id] = []
     return conversation_store[session_id]
 
 def build_messages(history: list) -> list:
-    """Build full message list with system prompt prepended."""
     return [{"role": "system", "content": SYSTEM_PROMPT}] + history
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,7 +99,8 @@ async def health():
     return {
         "status": "ok",
         "model": MODEL_NAME,
-        "api_key_set": bool(MINIMAX_API_KEY),
+        "provider": "Groq",
+        "api_key_set": bool(GROQ_API_KEY),
         "timestamp": datetime.now().isoformat()
     }
 
@@ -117,7 +116,7 @@ async def chat(req: ChatRequest):
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=build_messages(history),
-            max_tokens=1000,
+            max_tokens=1024,
             temperature=0.3,
         )
         assistant_msg = response.choices[0].message.content
@@ -147,7 +146,7 @@ async def chat_stream(req: ChatRequest):
             stream = client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=build_messages(history),
-                max_tokens=1000,
+                max_tokens=1024,
                 temperature=0.3,
                 stream=True,
             )
@@ -187,5 +186,17 @@ async def list_sessions():
         "sessions": [
             {"session_id": sid, "message_count": len(msgs)}
             for sid, msgs in conversation_store.items()
+        ]
+    }
+
+@app.get("/models")
+async def list_models():
+    """Available Groq models."""
+    return {
+        "models": [
+            {"name": "llama-3.3-70b-versatile",  "note": "Best quality — recommended"},
+            {"name": "llama-3.1-8b-instant",      "note": "Fastest, lightest"},
+            {"name": "mixtral-8x7b-32768",         "note": "Long context (32k tokens)"},
+            {"name": "gemma2-9b-it",               "note": "Google Gemma 2"},
         ]
     }
